@@ -5,10 +5,9 @@ import pandas as pd
 from datetime import datetime, timedelta
 import plotly.express as px
 import plotly.graph_objects as go
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 import math
 
-# API Configuration
 GEMINI_API_KEY = "AIzaSyB46mW-7p4MIrKSe-oudQLpjxWli6XjVpE"
 GEMINI_MODEL = "gemini-2.0-flash-001"
 
@@ -32,7 +31,11 @@ PRICING_CONFIG = {
         "Hazardous Materials": 1.5,
         "Fragile Items": 1.3,
         "Perishable Goods": 1.4,
-        "Electronics": 1.2
+        "Electronics": 1.2,
+        "Textiles": 1.1,
+        "Machinery": 1.3,
+        "Chemicals": 1.4,
+        "Food Products": 1.2
     },
     "port_charges": {
         "Mumbai": 10000,
@@ -43,6 +46,14 @@ PRICING_CONFIG = {
         "Express": 220,
         "Standard": 150,
         "Economy": 100
+    },
+    "consolidation_factors": {
+        "handling_fee_per_supplier": 2000,  # Fixed fee per supplier
+        "consolidation_discount": 0.95,     # 5% discount for consolidated shipments
+        "volume_efficiency_factor": 0.85,   # 15% volume efficiency gain
+        "min_consolidation_weight": 2.0,    # Minimum weight for consolidation benefits
+        "warehouse_fee_per_day": 500,       # Daily warehouse storage fee
+        "consolidation_time_days": 2        # Time needed for consolidation
     }
 }
 
@@ -61,32 +72,47 @@ DESTINATION_COUNTRIES = [
     "Bangladesh", "Myanmar", "Sri Lanka", "Nepal", "Maldives"
 ]
 
-# Major cities by country for destination
-DESTINATION_CITIES = {
-    "United States": ["New York", "Los Angeles", "Chicago", "Houston", "Phoenix", "Philadelphia", "San Antonio", "San Diego", "Dallas", "San Jose"],
-    "United Kingdom": ["London", "Birmingham", "Manchester", "Leeds", "Glasgow", "Liverpool", "Newcastle", "Sheffield", "Bristol", "Edinburgh"],
-    "Germany": ["Berlin", "Hamburg", "Munich", "Cologne", "Frankfurt", "Stuttgart", "Düsseldorf", "Dortmund", "Essen", "Bremen"],
-    "France": ["Paris", "Marseille", "Lyon", "Toulouse", "Nice", "Nantes", "Strasbourg", "Montpellier", "Bordeaux", "Lille"],
-    "Japan": ["Tokyo", "Osaka", "Yokohama", "Nagoya", "Sapporo", "Fukuoka", "Kobe", "Kyoto", "Kawasaki", "Saitama"],
-    "China": ["Shanghai", "Beijing", "Shenzhen", "Guangzhou", "Chengdu", "Tianjin", "Nanjing", "Wuhan", "Xi'an", "Hangzhou"],
-    "Singapore": ["Singapore"],
-    "UAE": ["Dubai", "Abu Dhabi", "Sharjah", "Ajman", "Fujairah", "Ras Al Khaimah", "Umm Al Quwain"],
-    "Saudi Arabia": ["Riyadh", "Jeddah", "Mecca", "Medina", "Dammam", "Khobar", "Tabuk", "Buraidah", "Khamis Mushait", "Hail"],
-    "Australia": ["Sydney", "Melbourne", "Brisbane", "Perth", "Adelaide", "Gold Coast", "Newcastle", "Canberra", "Sunshine Coast", "Wollongong"],
-    "Canada": ["Toronto", "Montreal", "Vancouver", "Calgary", "Edmonton", "Ottawa", "Winnipeg", "Quebec City", "Hamilton", "Kitchener"],
-    "Netherlands": ["Amsterdam", "Rotterdam", "The Hague", "Utrecht", "Eindhoven", "Tilburg", "Groningen", "Almere", "Breda", "Nijmegen"],
-    "Italy": ["Rome", "Milan", "Naples", "Turin", "Palermo", "Genoa", "Bologna", "Florence", "Bari", "Catania"],
-    "Spain": ["Madrid", "Barcelona", "Valencia", "Seville", "Zaragoza", "Malaga", "Murcia", "Palma", "Las Palmas", "Bilbao"],
-    "South Korea": ["Seoul", "Busan", "Incheon", "Daegu", "Daejeon", "Gwangju", "Suwon", "Ulsan", "Changwon", "Goyang"],
-    "Bangladesh": ["Dhaka", "Chittagong", "Khulna", "Rajshahi", "Sylhet", "Barisal", "Rangpur", "Comilla", "Narayanganj", "Gazipur"],
-    "Myanmar": ["Yangon", "Mandalay", "Naypyidaw", "Mawlamyine", "Bago", "Pathein", "Monywa", "Meiktila", "Myitkyina", "Taunggyi"],
-    "Sri Lanka": ["Colombo", "Kandy", "Galle", "Jaffna", "Negombo", "Anuradhapura", "Polonnaruwa", "Batticaloa", "Matara", "Trincomalee"],
-    "Nepal": ["Kathmandu", "Pokhara", "Lalitpur", "Bharatpur", "Biratnagar", "Birgunj", "Dharan", "Butwal", "Hetauda", "Janakpur"],
-    "Maldives": ["Malé", "Addu City", "Fuvahmulah"]
-}
+class PackingItem:
+    def __init__(self, description: str, quantity: int, weight_per_unit: float, 
+                 volume_per_unit: float, commodity_type: str, value: float):
+        self.description = description
+        self.quantity = quantity
+        self.weight_per_unit = weight_per_unit
+        self.volume_per_unit = volume_per_unit
+        self.commodity_type = commodity_type
+        self.value = value
+        self.total_weight = quantity * weight_per_unit
+        self.total_volume = quantity * volume_per_unit
+
+class Supplier:
+    def __init__(self, name: str, location: str, contact: str):
+        self.name = name
+        self.location = location
+        self.contact = contact
+        self.packing_list: List[PackingItem] = []
+        self.total_weight = 0
+        self.total_volume = 0
+        self.total_value = 0
+    
+    def add_packing_item(self, item: PackingItem):
+        self.packing_list.append(item)
+        self.total_weight += item.total_weight
+        self.total_volume += item.total_volume
+        self.total_value += item.value * item.quantity
+    
+    def get_dominant_commodity(self) -> str:
+        """Get the commodity type with highest value"""
+        if not self.packing_list:
+            return "General Goods"
+        
+        commodity_values = {}
+        for item in self.packing_list:
+            commodity = item.commodity_type
+            commodity_values[commodity] = commodity_values.get(commodity, 0) + (item.value * item.quantity)
+        
+        return max(commodity_values, key=commodity_values.get)
 
 def get_gemini_response(prompt: str) -> str:
-    """Get response from Google AI Studio API"""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
     headers = {
         "Content-Type": "application/json",
@@ -110,7 +136,6 @@ def get_gemini_response(prompt: str) -> str:
         return f"Error getting AI response: {str(e)}"
 
 def calculate_distance_with_ai(origin: str, destination: str) -> Tuple[float, float]:
-    """Calculate distance and duration using Google AI Studio API"""
     prompt = f"""
     Calculate the approximate driving distance and duration between {origin} and {destination}.
     
@@ -124,15 +149,11 @@ def calculate_distance_with_ai(origin: str, destination: str) -> Tuple[float, fl
     
     Use your knowledge of geography and typical driving speeds to provide realistic estimates.
     For Indian cities, consider average speeds of 50-60 km/h for intercity travel.
-    """
-    
+    """   
     try:
         response = get_gemini_response(prompt)
-        
-        # Parse the response to extract distance and duration
         distance_km = 0
-        duration_hours = 0
-        
+        duration_hours = 0     
         lines = response.split('\n')
         for line in lines:
             if 'Distance:' in line:
@@ -145,25 +166,17 @@ def calculate_distance_with_ai(origin: str, destination: str) -> Tuple[float, fl
                     duration_hours = float(line.split('Duration:')[1].split('hours')[0].strip())
                 except:
                     pass
-        
-        # Fallback calculation if parsing fails
         if distance_km == 0 or duration_hours == 0:
-            # Use a simple fallback based on city names
             distance_km = estimate_distance_fallback(origin, destination)
-            duration_hours = distance_km / 55  # Average speed of 55 km/h
-            
-        return distance_km, duration_hours
-        
+            duration_hours = distance_km / 55  # Average speed of 55 km/h         
+        return distance_km, duration_hours     
     except Exception as e:
         st.error(f"Error calculating distance with AI: {str(e)}")
-        # Fallback to simple estimation
         distance_km = estimate_distance_fallback(origin, destination)
         duration_hours = distance_km / 55
         return distance_km, duration_hours
 
 def estimate_distance_fallback(origin: str, destination: str) -> float:
-    """Simple fallback distance estimation"""
-    # Basic distance estimates between major Indian cities
     city_distances = {
         ("Delhi", "Mumbai"): 1400,
         ("Delhi", "Chennai"): 2200,
@@ -176,41 +189,149 @@ def estimate_distance_fallback(origin: str, destination: str) -> float:
         ("Chennai", "Bangalore"): 350,
         ("Kolkata", "Bangalore"): 1900,
     }
-    
-    # Check if we have a direct mapping
     key = (origin, destination)
     reverse_key = (destination, origin)
-    
     if key in city_distances:
         return city_distances[key]
     elif reverse_key in city_distances:
         return city_distances[reverse_key]
     else:
-        # Default estimate based on city names
         return 1000  # Default 1000 km
 
-def get_optimal_port(origin_city: str, destination_country: str, weight: float) -> Dict:
-    """Find optimal port for shipment"""
+def analyze_consolidation_benefits(suppliers: List[Supplier], consolidation_hub: str) -> Dict:
+    """
+    Analyze consolidation benefits and determine optimal strategy
+    
+    Consolidation Logic:
+    1. Collect all shipments at a central hub (usually nearest port city)
+    2. Combine compatible commodities
+    3. Optimize container loading
+    4. Calculate volume vs weight efficiency
+    5. Apply consolidation discounts
+    
+    Assumptions:
+    - Minimum 2 tons total weight for consolidation benefits
+    - Compatible commodities can be mixed (no hazardous with food)
+    - 85% volume efficiency due to better packing
+    - 5% shipping discount for consolidated loads
+    - 2-day consolidation time
+    """
+    
+    total_weight = sum(supplier.total_weight for supplier in suppliers)
+    total_volume = sum(supplier.total_volume for supplier in suppliers)
+    total_value = sum(supplier.total_value for supplier in suppliers)
+    
+    # Check commodity compatibility
+    commodity_types = set()
+    for supplier in suppliers:
+        commodity_types.add(supplier.get_dominant_commodity())
+    
+    # Incompatible combinations
+    incompatible_pairs = [
+        ("Hazardous Materials", "Food Products"),
+        ("Hazardous Materials", "Perishable Goods"),
+        ("Chemicals", "Food Products"),
+        ("Chemicals", "Perishable Goods")
+    ]
+    
+    is_compatible = True
+    for pair in incompatible_pairs:
+        if pair[0] in commodity_types and pair[1] in commodity_types:
+            is_compatible = False
+            break
+    
+    # Calculate consolidation benefits
+    consolidation_feasible = (
+        total_weight >= PRICING_CONFIG["consolidation_factors"]["min_consolidation_weight"] and
+        is_compatible and
+        len(suppliers) >= 2
+    )
+    
+    if consolidation_feasible:
+        # Volume efficiency improvement
+        optimized_volume = total_volume * PRICING_CONFIG["consolidation_factors"]["volume_efficiency_factor"]
+        
+        # Consolidation costs
+        handling_fees = len(suppliers) * PRICING_CONFIG["consolidation_factors"]["handling_fee_per_supplier"]
+        warehouse_fees = (PRICING_CONFIG["consolidation_factors"]["consolidation_time_days"] * 
+                         PRICING_CONFIG["consolidation_factors"]["warehouse_fee_per_day"])
+        
+        consolidation_costs = handling_fees + warehouse_fees
+        
+        # Savings from consolidation
+        shipping_discount = PRICING_CONFIG["consolidation_factors"]["consolidation_discount"]
+        
+        return {
+            "feasible": True,
+            "total_weight": total_weight,
+            "total_volume": total_volume,
+            "optimized_volume": optimized_volume,
+            "total_value": total_value,
+            "consolidation_costs": consolidation_costs,
+            "shipping_discount": shipping_discount,
+            "commodity_compatibility": is_compatible,
+            "incompatible_reason": None if is_compatible else "Incompatible commodities detected",
+            "consolidation_time_days": PRICING_CONFIG["consolidation_factors"]["consolidation_time_days"]
+        }
+    else:
+        return {
+            "feasible": False,
+            "total_weight": total_weight,
+            "total_volume": total_volume,
+            "optimized_volume": total_volume,
+            "total_value": total_value,
+            "consolidation_costs": 0,
+            "shipping_discount": 1.0,
+            "commodity_compatibility": is_compatible,
+            "incompatible_reason": "Minimum weight not met" if total_weight < 2.0 else "Incompatible commodities",
+            "consolidation_time_days": 0
+        }
+
+def get_optimal_port(suppliers: List[Supplier], destination_country: str, 
+                    consolidation_analysis: Dict) -> Dict:
+    """Find optimal port considering all supplier locations and consolidation"""
+    
     port_analysis = {}
     
     for port_city, info in WORLDREF_HUBS.items():
         if port_city == "Delhi":
             continue
+        
+        total_domestic_cost = 0
+        max_distance = 0
+        
+        # Calculate cost from each supplier to port
+        for supplier in suppliers:
+            distance, duration = calculate_distance_with_ai(supplier.location, port_city)
+            weight_factor = get_weight_factor(supplier.total_weight)
+            supplier_cost = (distance * PRICING_CONFIG["base_rate_per_km_per_ton"] * 
+                           weight_factor * supplier.total_weight)
             
-        distance, duration = calculate_distance_with_ai(origin_city, port_city)
-        weight_factor = get_weight_factor(weight)
-        domestic_cost = distance * PRICING_CONFIG["base_rate_per_km_per_ton"] * weight_factor * weight
+            # Apply commodity factor
+            commodity_factor = PRICING_CONFIG["commodity_factors"].get(
+                supplier.get_dominant_commodity(), 1.0
+            )
+            supplier_cost *= commodity_factor
+            
+            total_domestic_cost += supplier_cost
+            max_distance = max(max_distance, distance)
+        
+        # Add consolidation costs if applicable
+        if consolidation_analysis["feasible"]:
+            total_domestic_cost += consolidation_analysis["consolidation_costs"]
+        
+        # Port charges
         port_charges = PRICING_CONFIG["port_charges"].get(port_city, 9000)
         
-        # Check if port specializes in destination region
+        # Specialization bonus
         specialization_bonus = 0.9 if destination_country in info["specialization"] else 1.0
         
-        total_cost = (domestic_cost + port_charges) * specialization_bonus
+        # Apply consolidation discount to shipping
+        total_cost = (total_domestic_cost + port_charges) * specialization_bonus
         
         port_analysis[port_city] = {
-            "distance_km": distance,
-            "duration_hours": duration,
-            "domestic_cost": domestic_cost,
+            "total_domestic_cost": total_domestic_cost,
+            "max_distance_km": max_distance,
             "port_charges": port_charges,
             "total_cost": total_cost,
             "specialization": info["specialization"],
@@ -224,7 +345,6 @@ def get_optimal_port(origin_city: str, destination_country: str, weight: float) 
     }
 
 def get_weight_factor(weight: float) -> float:
-    """Get weight factor for pricing"""
     if weight < 1:
         return PRICING_CONFIG["weight_factors"]["< 1 ton"]
     elif weight <= 5:
@@ -234,26 +354,72 @@ def get_weight_factor(weight: float) -> float:
     else:
         return PRICING_CONFIG["weight_factors"]["> 10 tons"]
 
-def calculate_total_cost(origin: str, destination: str, weight: float, 
-                        commodity: str, service_level: str) -> Dict:
-    """Calculate total shipping cost"""
-    port_result = get_optimal_port(origin, destination, weight)
+def calculate_international_shipping_cost(total_weight: float, total_volume: float, 
+                                        destination_country: str, 
+                                        consolidation_analysis: Dict) -> float:
+    """
+    Calculate international shipping cost based on weight/volume and consolidation
+    
+    Assumptions:
+    - Shipping rates: $2000/ton or $300/CBM, whichever is higher
+    - Consolidation provides 5% discount
+    - Charges only till destination country port (no inland delivery)
+    """
+    
+    # Base rates
+    weight_based_rate = 2000  # USD per ton
+    volume_based_rate = 300   # USD per CBM
+    
+    # Use optimized volume if consolidated
+    effective_volume = consolidation_analysis["optimized_volume"]
+    
+    # Calculate costs
+    weight_cost = total_weight * weight_based_rate
+    volume_cost = effective_volume * volume_based_rate
+    
+    # Take higher of weight or volume cost
+    base_international_cost = max(weight_cost, volume_cost)
+    
+    # Apply consolidation discount
+    international_cost = base_international_cost * consolidation_analysis["shipping_discount"]
+    
+    return international_cost
+
+def calculate_multi_supplier_cost(suppliers: List[Supplier], destination_country: str, 
+                                destination_port: str, service_level: str) -> Dict:
+    """Calculate total cost for multi-supplier shipment with consolidation"""
+    
+    # Analyze consolidation benefits
+    consolidation_analysis = analyze_consolidation_benefits(suppliers, "Mumbai")  # Default hub
+    
+    # Get optimal port
+    port_result = get_optimal_port(suppliers, destination_country, consolidation_analysis)
     optimal_port = port_result["port"]
     port_analysis = port_result["analysis"]
     
-    domestic_cost = port_analysis[optimal_port]["domestic_cost"]
+    # Calculate costs
+    domestic_cost = port_analysis[optimal_port]["total_domestic_cost"]
     port_charges = port_analysis[optimal_port]["port_charges"]
     
-    commodity_factor = PRICING_CONFIG["commodity_factors"].get(commodity, 1.0)
-    base_international_rate = 2000  # USD per ton
-    international_cost = base_international_rate * weight * commodity_factor
+    # International shipping (till destination port only)
+    international_cost = calculate_international_shipping_cost(
+        consolidation_analysis["total_weight"],
+        consolidation_analysis["total_volume"],
+        destination_country,
+        consolidation_analysis
+    )
     
+    # Partner service cost
     partner_rate = PRICING_CONFIG["partner_rates"][service_level]
-    partner_cost = partner_rate * weight
+    partner_cost = partner_rate * consolidation_analysis["total_weight"]
     
-    insurance_cost = (domestic_cost + international_cost) * 0.02
+    # Insurance (2% of cargo value)
+    insurance_cost = consolidation_analysis["total_value"] * 0.02
+    
+    # Documentation (fixed cost)
     documentation_cost = 5000
     
+    # Total cost
     total_cost = (domestic_cost + port_charges + international_cost + 
                   partner_cost + insurance_cost + documentation_cost)
     
@@ -265,218 +431,271 @@ def calculate_total_cost(origin: str, destination: str, weight: float,
             "international_shipping": international_cost,
             "partner_service": partner_cost,
             "insurance": insurance_cost,
-            "documentation": documentation_cost
+            "documentation": documentation_cost,
+            "consolidation_costs": consolidation_analysis["consolidation_costs"]
         },
+        "consolidation_analysis": consolidation_analysis,
         "optimal_port": optimal_port,
         "port_analysis": port_analysis,
-        "distance_km": port_analysis[optimal_port]["distance_km"],
-        "duration_hours": port_analysis[optimal_port]["duration_hours"]
+        "suppliers_summary": {
+            "count": len(suppliers),
+            "total_weight": consolidation_analysis["total_weight"],
+            "total_volume": consolidation_analysis["total_volume"],
+            "total_value": consolidation_analysis["total_value"]
+        }
     }
-
-def generate_cost_explanation(cost_data: Dict, origin: str, destination: str, 
-                            weight: float, commodity: str, service_level: str) -> str:
-    """Generate AI-powered cost explanation"""
-    prompt = f"""
-    As a logistics expert for WorldRef, explain the following transport cost calculation:
-    
-    Origin: {origin}
-    Destination: {destination}
-    Weight: {weight} tons
-    Commodity: {commodity}
-    Service Level: {service_level}
-    
-    Selected Port: {cost_data['optimal_port']}
-    Distance to Port: {cost_data['distance_km']:.0f} km
-    Total Cost: ₹{cost_data['total_cost']:,.0f}
-    
-    Cost Breakdown:
-    - Domestic Transport: ₹{cost_data['breakdown']['domestic_transport']:,.0f}
-    - Port Charges: ₹{cost_data['breakdown']['port_charges']:,.0f}
-    - International Shipping: ₹{cost_data['breakdown']['international_shipping']:,.0f}
-    - Partner Service: ₹{cost_data['breakdown']['partner_service']:,.0f}
-    - Insurance: ₹{cost_data['breakdown']['insurance']:,.0f}
-    - Documentation: ₹{cost_data['breakdown']['documentation']:,.0f}
-    
-    Available ports and their analysis:
-    {json.dumps(cost_data['port_analysis'], indent=2)}
-    
-    Please provide:
-    1. Why this specific port was selected
-    2. Explanation of each cost component
-    3. Alternative options and their trade-offs
-    4. Any recommendations for cost optimization
-    
-    Keep the explanation professional but easy to understand.
-    """
-    
-    return get_gemini_response(prompt)
 
 def main():
     st.set_page_config(
-        page_title="WorldRef Transport Cost Estimator",
-        page_icon="🚚",
+        page_title="WorldRef Multi-Supplier Consolidation Estimator",
+        page_icon="📦",
         layout="wide"
     )
     
-    st.title("🚚 WorldRef Transport Cost Estimator")
-    st.markdown("Real-time transport cost calculation with AI-powered optimization")
+    st.title("📦 WorldRef Multi-Supplier Consolidation Estimator")
+    st.markdown("Advanced transport cost calculation with multi-supplier consolidation and optimization")
     
+    # Initialize session state
+    if 'suppliers' not in st.session_state:
+        st.session_state.suppliers = []
+    
+    # Sidebar for shipment details
     st.sidebar.header("📋 Shipment Details")
     
-    col1, col2 = st.sidebar.columns(2)
+    # Destination
+    destination_country = st.sidebar.selectbox("Destination Country", DESTINATION_COUNTRIES, index=0)
+    destination_port = st.sidebar.text_input("Destination Port", value="Main Port")
+    service_level = st.sidebar.selectbox("Service Level", ["Express", "Standard", "Economy"], index=1)
     
-    with col1:
-        # Origin city input with both dropdown and text input
-        origin_option = st.radio("Origin City Selection", ["Select from list", "Enter manually"])
-        if origin_option == "Select from list":
-            origin = st.selectbox("Origin City", INDIAN_CITIES, index=0)
-        else:
-            origin = st.text_input("Enter Origin City", value="Delhi")
-        
-        weight = st.number_input("Weight (tons)", min_value=0.1, max_value=100.0, value=1.0, step=0.1)
-        service_level = st.selectbox("Service Level", ["Express", "Standard", "Economy"], index=1)
+    # Main content area
+    tab1, tab2, tab3 = st.tabs(["📦 Supplier Management", "💰 Cost Analysis", "📊 Consolidation Report"])
     
-    with col2:
-        # Destination country and city selection
-        destination_country = st.selectbox("Destination Country", DESTINATION_COUNTRIES, index=0)
+    with tab1:
+        st.header("Supplier and Packing List Management")
         
-        # Destination city input
-        dest_option = st.radio("Destination City Selection", ["Select from list", "Enter manually"])
-        if dest_option == "Select from list":
-            if destination_country in DESTINATION_CITIES:
-                destination_city = st.selectbox("Destination City", DESTINATION_CITIES[destination_country], index=0)
+        # Add new supplier
+        st.subheader("Add New Supplier")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            supplier_name = st.text_input("Supplier Name")
+        with col2:
+            supplier_location = st.selectbox("Supplier Location", INDIAN_CITIES)
+        with col3:
+            supplier_contact = st.text_input("Contact Information")
+        
+        if st.button("Add Supplier"):
+            if supplier_name and supplier_location:
+                new_supplier = Supplier(supplier_name, supplier_location, supplier_contact)
+                st.session_state.suppliers.append(new_supplier)
+                st.success(f"Supplier {supplier_name} added successfully!")
             else:
-                destination_city = st.text_input("Enter Destination City", value="")
-        else:
-            destination_city = st.text_input("Enter Destination City", value="")
+                st.error("Please fill in supplier name and location")
         
-        commodity = st.selectbox("Commodity Type", list(PRICING_CONFIG["commodity_factors"].keys()), index=0)
-        preferred_date = st.date_input("Preferred Delivery Date", datetime.now() + timedelta(days=7))
+        # Display and manage existing suppliers
+        if st.session_state.suppliers:
+            st.subheader("Existing Suppliers")
+            
+            for i, supplier in enumerate(st.session_state.suppliers):
+                with st.expander(f"📍 {supplier.name} - {supplier.location}"):
+                    col1, col2 = st.columns([3, 1])
+                    
+                    with col1:
+                        st.write(f"**Contact:** {supplier.contact}")
+                        st.write(f"**Total Weight:** {supplier.total_weight:.2f} tons")
+                        st.write(f"**Total Volume:** {supplier.total_volume:.2f} CBM")
+                        st.write(f"**Total Value:** ${supplier.total_value:,.2f}")
+                    
+                    with col2:
+                        if st.button(f"Remove", key=f"remove_{i}"):
+                            st.session_state.suppliers.pop(i)
+                            st.experimental_rerun()
+                    
+                    # Add packing items
+                    st.write("**Add Packing Items:**")
+                    
+                    pcol1, pcol2, pcol3 = st.columns(3)
+                    
+                    with pcol1:
+                        item_desc = st.text_input("Item Description", key=f"desc_{i}")
+                        item_qty = st.number_input("Quantity", min_value=1, key=f"qty_{i}")
+                        item_weight = st.number_input("Weight per Unit (kg)", min_value=0.1, key=f"weight_{i}")
+                    
+                    with pcol2:
+                        item_volume = st.number_input("Volume per Unit (CBM)", min_value=0.01, key=f"volume_{i}")
+                        item_value = st.number_input("Value per Unit ($)", min_value=0.01, key=f"value_{i}")
+                        item_commodity = st.selectbox("Commodity Type", 
+                                                    list(PRICING_CONFIG["commodity_factors"].keys()),
+                                                    key=f"commodity_{i}")
+                    
+                    with pcol3:
+                        if st.button(f"Add Item", key=f"add_item_{i}"):
+                            if item_desc:
+                                new_item = PackingItem(
+                                    item_desc, item_qty, item_weight/1000,  # Convert kg to tons
+                                    item_volume, item_commodity, item_value
+                                )
+                                supplier.add_packing_item(new_item)
+                                st.success("Item added to packing list!")
+                                st.experimental_rerun()
+                    
+                    # Display packing list
+                    if supplier.packing_list:
+                        st.write("**Packing List:**")
+                        packing_df = pd.DataFrame([
+                            {
+                                "Description": item.description,
+                                "Quantity": item.quantity,
+                                "Weight (kg)": f"{item.weight_per_unit * 1000:.2f}",
+                                "Volume (CBM)": f"{item.volume_per_unit:.3f}",
+                                "Commodity": item.commodity_type,
+                                "Value ($)": f"{item.value:.2f}",
+                                "Total Weight (kg)": f"{item.total_weight * 1000:.2f}",
+                                "Total Value ($)": f"{item.value * item.quantity:.2f}"
+                            }
+                            for item in supplier.packing_list
+                        ])
+                        st.dataframe(packing_df, use_container_width=True)
     
-    if st.sidebar.button("💰 Calculate Cost", type="primary"):
-        if not destination_city:
-            st.error("Please enter a destination city")
-            return
+    with tab2:
+        st.header("Cost Analysis")
+        
+        if len(st.session_state.suppliers) >= 1:
+            if st.button("🔍 Analyze Consolidation & Calculate Costs", type="primary"):
+                with st.spinner("Analyzing consolidation options and calculating costs..."):
+                    cost_data = calculate_multi_supplier_cost(
+                        st.session_state.suppliers, destination_country, 
+                        destination_port, service_level
+                    )
+                    
+                    # Display key metrics
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    with col1:
+                        st.metric("Total Cost", f"₹{cost_data['total_cost']:,.0f}", 
+                                f"~${cost_data['total_cost']/83:,.0f} USD")
+                    
+                    with col2:
+                        st.metric("Total Weight", f"{cost_data['suppliers_summary']['total_weight']:.2f} tons")
+                    
+                    with col3:
+                        st.metric("Total Volume", f"{cost_data['suppliers_summary']['total_volume']:.2f} CBM")
+                    
+                    with col4:
+                        st.metric("Optimal Port", cost_data['optimal_port'])
+                    
+                    # Cost breakdown
+                    st.subheader("📊 Cost Breakdown")
+                    
+                    breakdown_data = cost_data['breakdown']
+                    fig = px.pie(
+                        values=list(breakdown_data.values()),
+                        names=[name.replace("_", " ").title() for name in breakdown_data.keys()],
+                        title="Cost Distribution"
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Detailed breakdown table
+                    breakdown_df = pd.DataFrame([
+                        {"Component": k.replace("_", " ").title(), "Cost (₹)": f"{v:,.0f}"}
+                        for k, v in breakdown_data.items()
+                    ])
+                    st.dataframe(breakdown_df, use_container_width=True)
+                    
+                    # Consolidation analysis
+                    st.subheader("🔄 Consolidation Analysis")
+                    
+                    cons_analysis = cost_data['consolidation_analysis']
+                    
+                    if cons_analysis['feasible']:
+                        st.success("✅ Consolidation is feasible and beneficial!")
+                        
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.info(f"""
+                            **Consolidation Benefits:**
+                            - Volume optimization: {cons_analysis['optimized_volume']:.2f} CBM 
+                              (vs {cons_analysis['total_volume']:.2f} CBM original)
+                            - Shipping discount: {(1-cons_analysis['shipping_discount'])*100:.0f}%
+                            - Consolidation time: {cons_analysis['consolidation_time_days']} days
+                            """)
+                        
+                        with col2:
+                            st.warning(f"""
+                            **Consolidation Costs:**
+                            - Handling fees: ₹{cons_analysis['consolidation_costs']:,.0f}
+                            - Compatible commodities: ✅
+                            - Total suppliers: {cost_data['suppliers_summary']['count']}
+                            """)
+                    else:
+                        st.error("❌ Consolidation not feasible")
+                        st.write(f"**Reason:** {cons_analysis['incompatible_reason']}")
+                    
+                    # Port analysis
+                    st.subheader("🚢 Port Analysis")
+                    port_df = pd.DataFrame([
+                        {
+                            "Port": port,
+                            "Total Domestic Cost (₹)": f"{data['total_domestic_cost']:,.0f}",
+                            "Port Charges (₹)": f"{data['port_charges']:,.0f}",
+                            "Total Cost (₹)": f"{data['total_cost']:,.0f}",
+                            "Suitable": "✅" if data['suitable'] else "❌"
+                        }
+                        for port, data in cost_data['port_analysis'].items()
+                    ])
+                    st.dataframe(port_df, use_container_width=True)
+        else:
+            st.info("Please add at least one supplier to calculate costs.")
+    
+    with tab3:
+        st.header("📊 Consolidation Report")
+        
+        if len(st.session_state.suppliers) >= 1:
+            # Supplier summary
+            st.subheader("Supplier Summary")
             
-        with st.spinner("Calculating optimal route and costs..."):
-            cost_data = calculate_total_cost(origin, destination_country, weight, commodity, service_level)
+            summary_data = []
+            for supplier in st.session_state.suppliers:
+                summary_data.append({
+                    "Supplier": supplier.name,
+                    "Location": supplier.location,
+                    "Items": len(supplier.packing_list),
+                    "Weight (tons)": f"{supplier.total_weight:.2f}",
+                    "Volume (CBM)": f"{supplier.total_volume:.2f}",
+                    "Value ($)": f"{supplier.total_value:,.2f}",
+                    "Dominant Commodity": supplier.get_dominant_commodity()
+                })
             
-            col1, col2, col3 = st.columns([2, 1, 1])
+            summary_df = pd.DataFrame(summary_data)
+            st.dataframe(summary_df, use_container_width=True)
             
-            with col1:
-                st.metric(
-                    "Total Cost",
-                    f"₹{cost_data['total_cost']:,.0f}",
-                    f"~${cost_data['total_cost']/83:,.0f} USD"
-                )
+            # Consolidation assumptions
+            st.subheader("📋 Consolidation Logic & Assumptions")
             
-            with col2:
-                st.metric(
-                    "Optimal Port",
-                    cost_data['optimal_port'],
-                    f"{cost_data['distance_km']:.0f} km"
-                )
+            st.markdown("""
+            **Consolidation Benefits Logic:**
+            1. **Minimum Requirements:** At least 2 tons total weight and 2+ suppliers
+            2. **Commodity Compatibility:** Hazardous materials cannot be mixed with food/perishables
+            3. **Volume Optimization:** 15% volume efficiency gain through better packing
+            4. **Shipping Discount:** 5% discount on international shipping for consolidated loads
+            5. **Consolidation Hub:** Nearest port city for optimal cost efficiency
             
-            with col3:
-                st.metric(
-                    "Estimated Transit",
-                    f"{cost_data['duration_hours']:.1f} hours",
-                    "to port"
-                )
+            **Cost Assumptions:**
+            - **Domestic Transport:** ₹15 per km per ton with weight-based multipliers
+            - **Handling Fee:** ₹2,000 per supplier for consolidation
+            - **Warehouse Storage:** ₹500 per day (2-day consolidation time)
+            - **International Shipping:** Higher of $2,000/ton or $300/CBM
+            - **Insurance:** 2% of total cargo value
+            - **Coverage:** Costs calculated till destination country port only
             
-            st.subheader("📊 Cost Breakdown")
-            
-            breakdown_data = cost_data['breakdown']
-            
-            fig = px.pie(
-                values=list(breakdown_data.values()),
-                names=list(breakdown_data.keys()),
-                title="Cost Distribution"
-            )
-            st.plotly_chart(fig, use_container_width=True)
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.subheader("💰 Detailed Cost Breakdown")
-                breakdown_df = pd.DataFrame([
-                    {"Component": k.replace("_", " ").title(), "Cost (₹)": f"{v:,.0f}"}
-                    for k, v in breakdown_data.items()
-                ])
-                st.dataframe(breakdown_df, use_container_width=True)
-            
-            with col2:
-                st.subheader("🚢 Port Analysis")
-                port_df = pd.DataFrame([
-                    {
-                        "Port": port,
-                        "Distance (km)": f"{data['distance_km']:.0f}",
-                        "Total Cost (₹)": f"{data['total_cost']:,.0f}",
-                        "Suitable": "✅" if data['suitable'] else "❌"
-                    }
-                    for port, data in cost_data['port_analysis'].items()
-                ])
-                st.dataframe(port_df, use_container_width=True)
-            
-            st.subheader("🤖 AI Cost Analysis")
-            
-            with st.spinner("Generating detailed explanation..."):
-                explanation = generate_cost_explanation(
-                    cost_data, origin, f"{destination_city}, {destination_country}", 
-                    weight, commodity, service_level
-                )
-            
-            st.markdown(explanation)
-            
-            st.subheader("📈 Additional Insights")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.info(f"""
-                **Route Optimization:**
-                - Selected port: {cost_data['optimal_port']}
-                - Distance: {cost_data['distance_km']:.0f} km
-                - Estimated delivery: {preferred_date + timedelta(days=7)}
-                """)
-            
-            with col2:
-                st.warning(f"""
-                **Cost Factors:**
-                - Weight factor: {get_weight_factor(weight)}x
-                - Commodity factor: {PRICING_CONFIG['commodity_factors'][commodity]}x
-                - Service level: {service_level}
-                """)
-            
-            st.subheader("📄 Export Options")
-            
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                if st.button("📋 Generate Quote"):
-                    quote_text = f"""
-WORLDREF TRANSPORT QUOTE
-
-From: {origin}
-To: {destination_city}, {destination_country}
-Weight: {weight} tons
-Commodity: {commodity}
-Service: {service_level}
-
-Via: {cost_data['optimal_port']} Port
-Total Cost: ₹{cost_data['total_cost']:,.0f}
-
-Valid until: {datetime.now() + timedelta(days=7)}
-                    """
-                    st.text_area("Quote", quote_text, height=200)
-            
-            with col2:
-                if st.button("📊 Download Report"):
-                    st.success("Report generation feature coming soon!")
-            
-            with col3:
-                if st.button("🔄 Book Shipment"):
-                    st.success("Booking integration coming soon!")
+            **Port Selection Criteria:**
+            - Distance from suppliers to port
+            - Port specialization for destination region
+            - Total cost optimization including consolidation
+            """)
+        else:
+            st.info("Add suppliers to view consolidation report.")
 
 if __name__ == "__main__":
     main()
