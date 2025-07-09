@@ -485,10 +485,11 @@ def main():
             supplier_contact = st.text_input("Contact Information")
         
         if st.button("Add Supplier"):
-            if supplier_name and supplier_location:
-                new_supplier = Supplier(supplier_name, supplier_location, supplier_contact)
+            if supplier_name and supplier_name.strip() and supplier_location:
+                new_supplier = Supplier(supplier_name.strip(), supplier_location, supplier_contact)
                 st.session_state.suppliers.append(new_supplier)
                 st.success(f"Supplier {supplier_name} added successfully!")
+                st.rerun()
             else:
                 st.error("Please fill in supplier name and location")
         
@@ -507,55 +508,74 @@ def main():
                         st.write(f"**Total Value:** ${supplier.total_value:,.2f}")
                     
                     with col2:
-                        if st.button(f"Remove", key=f"remove_{i}"):
+                        if st.button(f"Remove {supplier.name}", key=f"remove_{i}"):
                             st.session_state.suppliers.pop(i)
-                            st.experimental_rerun()
+                            st.rerun()
                     
                     # Add packing items
                     st.write("**Add Packing Items:**")
                     
-                    pcol1, pcol2, pcol3 = st.columns(3)
-                    
-                    with pcol1:
-                        item_desc = st.text_input("Item Description", key=f"desc_{i}")
-                        item_qty = st.number_input("Quantity", min_value=1, key=f"qty_{i}")
-                        item_weight = st.number_input("Weight per Unit (kg)", min_value=0.1, key=f"weight_{i}")
-                    
-                    with pcol2:
-                        item_volume = st.number_input("Volume per Unit (CBM)", min_value=0.01, key=f"volume_{i}")
-                        item_value = st.number_input("Value per Unit ($)", min_value=0.01, key=f"value_{i}")
-                        item_commodity = st.selectbox("Commodity Type", 
-                                                    list(PRICING_CONFIG["commodity_factors"].keys()),
-                                                    key=f"commodity_{i}")
-                    
-                    with pcol3:
-                        if st.button(f"Add Item", key=f"add_item_{i}"):
-                            if item_desc:
+                    with st.form(key=f"item_form_{i}"):
+                        pcol1, pcol2, pcol3 = st.columns(3)
+                        
+                        with pcol1:
+                            item_desc = st.text_input("Item Description", key=f"desc_{i}")
+                            item_qty = st.number_input("Quantity", min_value=1, value=1, key=f"qty_{i}")
+                            item_weight = st.number_input("Weight per Unit (kg)", min_value=0.1, value=1.0, step=0.1, key=f"weight_{i}")
+                        
+                        with pcol2:
+                            item_volume = st.number_input("Volume per Unit (CBM)", min_value=0.01, value=0.1, step=0.01, key=f"volume_{i}")
+                            item_value = st.number_input("Value per Unit ($)", min_value=0.01, value=10.0, step=0.01, key=f"value_{i}")
+                            item_commodity = st.selectbox("Commodity Type", 
+                                                        list(PRICING_CONFIG["commodity_factors"].keys()),
+                                                        key=f"commodity_{i}")
+                        
+                        with pcol3:
+                            st.write("")  # Empty space for alignment
+                            st.write("")  # Empty space for alignment
+                            add_item_button = st.form_submit_button(f"Add Item to {supplier.name}")
+                        
+                        if add_item_button:
+                            if item_desc and item_desc.strip():
                                 new_item = PackingItem(
                                     item_desc, item_qty, item_weight/1000,  # Convert kg to tons
                                     item_volume, item_commodity, item_value
                                 )
                                 supplier.add_packing_item(new_item)
-                                st.success("Item added to packing list!")
-                                st.experimental_rerun()
+                                st.success(f"Item '{item_desc}' added to {supplier.name}'s packing list!")
+                                st.rerun()
+                            else:
+                                st.error("Please enter item description")
                     
                     # Display packing list
                     if supplier.packing_list:
-                        st.write("**Packing List:**")
+                        st.write("**Current Packing List:**")
                         packing_df = pd.DataFrame([
                             {
                                 "Description": item.description,
                                 "Quantity": item.quantity,
-                                "Weight (kg)": f"{item.weight_per_unit * 1000:.2f}",
-                                "Volume (CBM)": f"{item.volume_per_unit:.3f}",
+                                "Unit Weight (kg)": f"{item.weight_per_unit * 1000:.2f}",
+                                "Unit Volume (CBM)": f"{item.volume_per_unit:.3f}",
                                 "Commodity": item.commodity_type,
-                                "Value ($)": f"{item.value:.2f}",
+                                "Unit Value ($)": f"{item.value:.2f}",
                                 "Total Weight (kg)": f"{item.total_weight * 1000:.2f}",
+                                "Total Volume (CBM)": f"{item.total_volume:.3f}",
                                 "Total Value ($)": f"{item.value * item.quantity:.2f}"
                             }
                             for item in supplier.packing_list
                         ])
                         st.dataframe(packing_df, use_container_width=True)
+                        
+                        # Option to clear packing list
+                        if st.button(f"Clear Packing List", key=f"clear_{i}"):
+                            supplier.packing_list = []
+                            supplier.total_weight = 0
+                            supplier.total_volume = 0
+                            supplier.total_value = 0
+                            st.success("Packing list cleared!")
+                            st.rerun()
+                    else:
+                        st.info("No items in packing list. Add items above.")
     
     with tab2:
         st.header("Cost Analysis")
