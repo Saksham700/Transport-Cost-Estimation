@@ -19,7 +19,7 @@ WORLDREF_HUBS = {
 }
 
 PRICING_CONFIG = {
-    "base_rate_per_km_per_ton": 15,
+    "base_rate_per_km_per_ton": 15,  # Road transportation within India
     "weight_factors": {
         "< 1 ton": 1.2,
         "1-5 tons": 1.0,
@@ -42,10 +42,18 @@ PRICING_CONFIG = {
         "Chennai": 9000,
         "Kolkata": 8500
     },
-    "partner_rates": {
-        "Express": 220,
-        "Standard": 150,
-        "Economy": 100
+    "international_rates": {
+        "Air": {
+            "per_kg": 250,       # ₹ per kg
+            "per_cbm": 8000      # ₹ per CBM
+        },
+        "Sea": {
+            "per_kg": 45,        # ₹ per kg
+            "per_cbm": 1200      # ₹ per CBM
+        },
+        "Road": {
+            "per_km_per_ton": 18 # ₹ per km per ton
+        }
     },
     "consolidation_factors": {
         "handling_fee_per_supplier": 2000,
@@ -55,15 +63,10 @@ PRICING_CONFIG = {
         "warehouse_fee_per_day": 500,
         "consolidation_time_days": 2
     },
-    "mode_factors": {
-        "Road": 1.0,
-        "Rail": 0.8,
-        "Air": 1.5
-    },
-    "port_mode_surcharges": {
+    "international_mode_surcharges": {
         "Air": 1.3,
-        "Rail": 0.9,
-        "Road": 1.0
+        "Sea": 1.0,
+        "Road": 1.1
     }
 }
 
@@ -82,12 +85,13 @@ DESTINATION_COUNTRIES = [
     "Bangladesh", "Myanmar", "Sri Lanka", "Nepal", "Maldives"
 ]
 
-TRANSPORT_MODES = ["Road", "Rail", "Air"] 
+# International transport modes
+INTERNATIONAL_MODES = ["Air", "Sea", "Road"] 
 
 class PackingItem:
     def __init__(self, description: str, quantity: int, weight_per_unit: float, 
                  volume_per_unit: float, commodity_type: str, value: float,
-                 location: str, transport_mode: str):
+                 location: str):
         self.description = description
         self.quantity = quantity
         self.weight_per_unit = weight_per_unit
@@ -95,7 +99,6 @@ class PackingItem:
         self.commodity_type = commodity_type
         self.value = value
         self.location = location
-        self.transport_mode = transport_mode
         self.total_weight = quantity * weight_per_unit
         self.total_volume = quantity * volume_per_unit
 
@@ -108,16 +111,14 @@ class Supplier:
         self.total_volume = 0
         self.total_value = 0
         self.locations = set()
-        self.transport_modes = set()
-    
+        
     def add_packing_item(self, item: PackingItem):
         self.packing_list.append(item)
         self.total_weight += item.total_weight
         self.total_volume += item.total_volume
         self.total_value += item.value * item.quantity
         self.locations.add(item.location)
-        self.transport_modes.add(item.transport_mode)
-    
+        
     def get_dominant_commodity(self) -> str:
         if not self.packing_list:
             return "General Goods"    
@@ -125,13 +126,10 @@ class Supplier:
         for item in self.packing_list:
             commodity = item.commodity_type
             commodity_values[commodity] = commodity_values.get(commodity, 0) + (item.value * item.quantity)        
-        return max(commodity_values, key=commodity_values.get)
+        return max(commodity_values, key=commodity_values.get)  
     
     def get_locations_summary(self) -> str:
-        return ", ".join(self.locations) if self.locations else "N/A"
-    
-    def get_transport_modes_summary(self) -> str:
-        return ", ".join(self.transport_modes) if self.transport_modes else "N/A"
+        return ", ".join(self.locations) if self.locations else "N/A"  
 
 def get_gemini_response(prompt: str) -> str:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
@@ -223,33 +221,28 @@ def analyze_consolidation_benefits(suppliers: List[Supplier], consolidation_hub:
     total_weight = 0
     total_volume = 0
     total_value = 0
-    commodity_types = set()
-    
+    commodity_types = set()    
     for supplier in suppliers:
         for item in supplier.packing_list:
             total_weight += item.total_weight
             total_volume += item.total_volume
             total_value += item.value * item.quantity
-            commodity_types.add(item.commodity_type)
-    
+            commodity_types.add(item.commodity_type)   
     incompatible_pairs = [
         ("Hazardous Materials", "Food Products"),
         ("Hazardous Materials", "Perishable Goods"),
         ("Chemicals", "Food Products"),
         ("Chemicals", "Perishable Goods")
-    ]   
-    
+    ]      
     is_compatible = True
     for pair in incompatible_pairs:
         if pair[0] in commodity_types and pair[1] in commodity_types:
             is_compatible = False
-            break    
-            
+            break               
     consolidation_feasible = (
         total_weight >= PRICING_CONFIG["consolidation_factors"]["min_consolidation_weight"] and
         is_compatible
-    )   
-    
+    )      
     if consolidation_feasible:
         optimized_volume = total_volume * PRICING_CONFIG["consolidation_factors"]["volume_efficiency_factor"]
         handling_fees = len(suppliers) * PRICING_CONFIG["consolidation_factors"]["handling_fee_per_supplier"]
@@ -291,45 +284,28 @@ def get_optimal_port(suppliers: List[Supplier], destination_country: str,
             continue         
         total_domestic_cost = 0
         max_distance = 0
-        transport_modes = set()
-        
-        # Calculate cost for each item
         for supplier in suppliers:
             for item in supplier.packing_list:
                 distance, duration = calculate_distance_with_ai(item.location, port_city)
                 weight_factor = get_weight_factor(item.total_weight)
                 base_rate = PRICING_CONFIG["base_rate_per_km_per_ton"]
-                mode_factor = PRICING_CONFIG["mode_factors"].get(item.transport_mode, 1.0)
-                item_cost = distance * base_rate * mode_factor * weight_factor * item.total_weight
+                item_cost = distance * base_rate * weight_factor * item.total_weight
                 commodity_factor = PRICING_CONFIG["commodity_factors"].get(item.commodity_type, 1.0)
                 item_cost *= commodity_factor
                 total_domestic_cost += item_cost
-                max_distance = max(max_distance, distance)
-                transport_modes.add(item.transport_mode)
-        
+                max_distance = max(max_distance, distance)   
         if consolidation_analysis["feasible"]:
-            total_domestic_cost += consolidation_analysis["consolidation_costs"]
-            
+            total_domestic_cost += consolidation_analysis["consolidation_costs"]          
         port_charges = PRICING_CONFIG["port_charges"].get(port_city, 9000)
-        port_mode_factor = 1.0
-        
-        # Apply highest surcharge if any item has a surcharge
-        for mode in transport_modes:
-            surcharge = PRICING_CONFIG["port_mode_surcharges"].get(mode, 1.0)
-            if surcharge > port_mode_factor:
-                port_mode_factor = surcharge
-                
-        port_charges *= port_mode_factor
         specialization_bonus = 0.9 if destination_country in info["specialization"] else 1.0       
-        total_cost = (total_domestic_cost + port_charges) * specialization_bonus       
+        total_cost = total_domestic_cost + port_charges * specialization_bonus       
         port_analysis[port_city] = {
             "total_domestic_cost": total_domestic_cost,
             "max_distance_km": max_distance,
             "port_charges": port_charges,
             "total_cost": total_cost,
             "specialization": info["specialization"],
-            "suitable": destination_country in info["specialization"],
-            "port_mode_factor": port_mode_factor
+            "suitable": destination_country in info["specialization"]
         }   
     optimal_port = min(port_analysis.keys(), key=lambda x: port_analysis[x]["total_cost"])
     return {
@@ -349,18 +325,35 @@ def get_weight_factor(weight: float) -> float:
 
 def calculate_international_shipping_cost(total_weight: float, total_volume: float, 
                                         destination_country: str, 
-                                        consolidation_analysis: Dict) -> float:
-    weight_based_rate = 2000
-    volume_based_rate = 300   
-    effective_volume = consolidation_analysis["optimized_volume"]
-    weight_cost = total_weight * weight_based_rate
-    volume_cost = effective_volume * volume_based_rate   
-    base_international_cost = max(weight_cost, volume_cost)
-    international_cost = base_international_cost * consolidation_analysis["shipping_discount"]    
-    return international_cost
+                                        consolidation_analysis: Dict,
+                                        international_mode: str) -> float:
+    # Get international rates based on mode
+    mode_rates = PRICING_CONFIG["international_rates"][international_mode]
+    surcharge = PRICING_CONFIG["international_mode_surcharges"].get(international_mode, 1.0)
+    
+    if international_mode == "Road":
+        # For road transport, we need distance to destination country
+        # This is simplified - in real application, we'd need actual distance
+        avg_road_distance = {
+            "Bangladesh": 500,
+            "Nepal": 700,
+            "Bhutan": 1000,
+            "Myanmar": 1500,
+            "Sri Lanka": 2500  # Includes ferry
+        }
+        distance = avg_road_distance.get(destination_country, 2000)
+        cost = distance * mode_rates["per_km_per_ton"] * total_weight
+    else:
+        # For Air and Sea
+        weight_cost = total_weight * 1000 * mode_rates["per_kg"]  # Convert tons to kg
+        volume_cost = consolidation_analysis["optimized_volume"] * mode_rates["per_cbm"]
+        cost = max(weight_cost, volume_cost)
+    
+    # Apply surcharge and consolidation discount
+    return cost * surcharge * consolidation_analysis["shipping_discount"]
 
 def calculate_multi_supplier_cost(suppliers: List[Supplier], destination_country: str, 
-                                destination_port: str, service_level: str) -> Dict:
+                                destination_port: str, international_mode: str) -> Dict:
     consolidation_analysis = analyze_consolidation_benefits(suppliers, "Mumbai")
     port_result = get_optimal_port(suppliers, destination_country, consolidation_analysis)
     optimal_port = port_result["port"]
@@ -371,21 +364,18 @@ def calculate_multi_supplier_cost(suppliers: List[Supplier], destination_country
         consolidation_analysis["total_weight"],
         consolidation_analysis["total_volume"],
         destination_country,
-        consolidation_analysis
+        consolidation_analysis,
+        international_mode
     )    
-    partner_rate = PRICING_CONFIG["partner_rates"][service_level]
-    partner_cost = partner_rate * consolidation_analysis["total_weight"]    
     insurance_cost = consolidation_analysis["total_value"] * 0.02
     documentation_cost = 5000   
-    total_cost = (domestic_cost + port_charges + international_cost + 
-                  partner_cost + insurance_cost + documentation_cost)   
+    total_cost = domestic_cost + port_charges + international_cost + insurance_cost + documentation_cost   
     return {
         "total_cost": total_cost,
         "breakdown": {
             "domestic_transport": domestic_cost,
             "port_charges": port_charges,
             "international_shipping": international_cost,
-            "partner_service": partner_cost,
             "insurance": insurance_cost,
             "documentation": documentation_cost,
             "consolidation_costs": consolidation_analysis["consolidation_costs"]
@@ -398,7 +388,8 @@ def calculate_multi_supplier_cost(suppliers: List[Supplier], destination_country
             "total_weight": consolidation_analysis["total_weight"],
             "total_volume": consolidation_analysis["total_volume"],
             "total_value": consolidation_analysis["total_value"]
-        }
+        },
+        "international_mode": international_mode
     }
 
 def main():
@@ -413,8 +404,9 @@ def main():
         st.session_state.suppliers = []   
     st.sidebar.header("📋 Shipment Details")
     destination_country = st.sidebar.selectbox("Destination Country", DESTINATION_COUNTRIES, index=0)
+    international_mode = st.sidebar.selectbox("International Transport Mode", INTERNATIONAL_MODES, index=1)
     destination_port = st.sidebar.text_input("Destination Port", value="Main Port")
-    service_level = st.sidebar.selectbox("Service Level", ["Express", "Standard", "Economy"], index=1)   
+   
     tab1, tab2, tab3 = st.tabs(["📦 Supplier Management", "💰 Cost Analysis", "📊 Consolidation Report"])   
     with tab1:
         st.header("Supplier and Packing List Management")
@@ -447,7 +439,6 @@ def main():
                         st.write(f"**Total Volume:** {supplier.total_volume:.2f} CBM")
                         st.write(f"**Total Value:** ${supplier.total_value:,.2f}")
                         st.write(f"**Locations:** {supplier.get_locations_summary()}")
-                        st.write(f"**Transport Modes:** {supplier.get_transport_modes_summary()}")                  
                     with col2:
                         if st.button(f"Remove {supplier.name}", key=f"remove_{i}"):
                             st.session_state.suppliers.pop(i)
@@ -468,7 +459,6 @@ def main():
                                                         key=f"commodity_{i}")
                         with pcol4:
                             item_location = st.selectbox("Location", INDIAN_CITIES, key=f"location_{i}")
-                            item_transport = st.selectbox("Transport Mode", TRANSPORT_MODES, key=f"transport_{i}")
                             
                         add_item_button = st.form_submit_button(f"Add Item to {supplier.name}")                       
                         if add_item_button:
@@ -476,7 +466,7 @@ def main():
                                 new_item = PackingItem(
                                     item_desc, item_qty, item_weight/1000,  # Convert kg to tons
                                     item_volume, item_commodity, item_value,
-                                    item_location, item_transport
+                                    item_location
                                 )
                                 supplier.add_packing_item(new_item)
                                 st.success(f"Item '{item_desc}' added to {supplier.name}'s packing list!")
@@ -497,8 +487,7 @@ def main():
                                 "Total Weight (kg)": f"{item.total_weight * 1000:.2f}",
                                 "Total Volume (CBM)": f"{item.total_volume:.3f}",
                                 "Total Value ($)": f"{item.value * item.quantity:.2f}",
-                                "Location": item.location,
-                                "Transport Mode": item.transport_mode
+                                "Location": item.location
                             })
                         packing_df = pd.DataFrame(packing_data)
                         st.dataframe(packing_df, use_container_width=True)                       
@@ -508,7 +497,6 @@ def main():
                             supplier.total_volume = 0
                             supplier.total_value = 0
                             supplier.locations = set()
-                            supplier.transport_modes = set()
                             st.success("Packing list cleared!")
                             st.rerun()
                     else:
@@ -520,7 +508,7 @@ def main():
                 with st.spinner("Analyzing consolidation options and calculating costs..."):
                     cost_data = calculate_multi_supplier_cost(
                         st.session_state.suppliers, destination_country, 
-                        destination_port, service_level
+                        destination_port, international_mode
                     )                 
                     col1, col2, col3, col4 = st.columns(4)                  
                     with col1:
@@ -531,7 +519,7 @@ def main():
                     with col3:
                         st.metric("Total Volume", f"{cost_data['suppliers_summary']['total_volume']:.2f} CBM")              
                     with col4:
-                        st.metric("Optimal Port", cost_data['optimal_port'])        
+                        st.metric("Transport Mode", f"Domestic: Road\nInternational: {cost_data['international_mode']}")        
                     st.subheader("📊 Cost Breakdown")                    
                     breakdown_data = cost_data['breakdown']
                     fig = px.pie(
@@ -577,35 +565,27 @@ def main():
                             "Port Charges (₹)": f"{data['port_charges']:,.0f}",
                             "Total Cost (₹)": f"{data['total_cost']:,.0f}",
                             "Specialization": data['specialization'],
-                            "Suitable": "✅" if data['suitable'] else "❌",
-                            "Mode Factor": f"{data['port_mode_factor']*100:.0f}%"
+                            "Suitable": "✅" if data['suitable'] else "❌"
                         })                    
                     port_df = pd.DataFrame(port_data)
                     st.dataframe(port_df, use_container_width=True)
                     
-                    # Transport mode distribution
-                    mode_summary = {}
-                    for supplier in st.session_state.suppliers:
-                        for item in supplier.packing_list:
-                            mode = item.transport_mode
-                            mode_summary[mode] = mode_summary.get(mode, 0) + 1                   
-                    st.subheader("🚚 Transport Mode Impact")
-                    mode_col1, mode_col2 = st.columns(2)                   
-                    with mode_col1:
-                        st.write("**Transport Mode Distribution:**")
-                        mode_fig = px.pie(
-                            values=list(mode_summary.values()),
-                            names=list(mode_summary.keys()),
-                            title="Transport Modes Used"
-                        )
-                        st.plotly_chart(mode_fig, use_container_width=True)                   
-                    with mode_col2:
-                        st.write("**Cost Impact Factors:**")
-                        mode_factors = [
-                            {"Mode": mode, "Cost Factor": factor, "Port Surcharge": f"{PRICING_CONFIG['port_mode_surcharges'][mode]*100:.0f}%"}
-                            for mode, factor in PRICING_CONFIG["mode_factors"].items()
-                        ]
-                        st.dataframe(pd.DataFrame(mode_factors))                      
+                    st.subheader("✈️ International Shipping Details")
+                    intl_col1, intl_col2 = st.columns(2)
+                    with intl_col1:
+                        st.write(f"**Mode:** {cost_data['international_mode']}")
+                        if cost_data['international_mode'] == "Road":
+                            st.write("**Applicability:** Only for neighboring countries")
+                        st.write(f"**Surcharge:** {PRICING_CONFIG['international_mode_surcharges'][cost_data['international_mode']]*100:.0f}%")
+                    with intl_col2:
+                        rates = PRICING_CONFIG["international_rates"][cost_data['international_mode']]
+                        if cost_data['international_mode'] == "Road":
+                            st.write(f"**Rate:** ₹{rates['per_km_per_ton']} per km per ton")
+                        else:
+                            st.write(f"**Air/Sea Rates:**")
+                            st.write(f"- Per kg: ₹{rates['per_kg']}")
+                            st.write(f"- Per CBM: ₹{rates['per_cbm']}")
+                    
         else:
             st.info("Please add at least one supplier to calculate costs.")   
     with tab3:
@@ -621,13 +601,10 @@ def main():
                     "Volume (CBM)": f"{supplier.total_volume:.2f}",
                     "Value ($)": f"{supplier.total_value:,.2f}",
                     "Dominant Commodity": supplier.get_dominant_commodity(),
-                    "Locations": supplier.get_locations_summary(),
-                    "Transport Modes": supplier.get_transport_modes_summary()
+                    "Locations": supplier.get_locations_summary()
                 })          
             summary_df = pd.DataFrame(summary_data)
             st.dataframe(summary_df, use_container_width=True)
-            
-            # Item-level details
             st.subheader("📋 Item Details")
             item_data = []
             for supplier in st.session_state.suppliers:
@@ -640,42 +617,34 @@ def main():
                         "Volume (CBM)": f"{item.volume_per_unit:.3f}",
                         "Commodity": item.commodity_type,
                         "Value ($)": f"{item.value:.2f}",
-                        "Location": item.location,
-                        "Transport Mode": item.transport_mode
+                        "Location": item.location
                     })
             item_df = pd.DataFrame(item_data)
             st.dataframe(item_df, use_container_width=True)           
-            st.subheader("📋 Consolidation Logic & Assumptions")            
+            st.subheader("📋 Transport Logic & Assumptions")            
             st.markdown("""
-            **Consolidation Benefits Logic:**
-            1. **Minimum Requirements:** Supports shipments as small as 0.1 tons and single suppliers
-            2. **Commodity Compatibility:** Hazardous materials cannot be mixed with food/perishables
-            3. **Volume Optimization:** 15% volume efficiency gain through better packing
-            4. **Shipping Discount:** 5% discount on international shipping for consolidated loads
-            5. **Consolidation Hub:** Nearest port city for optimal cost efficiency
+            **Transportation Strategy:**
+            - **Within India (Source to Port):** Fixed as Road transport
+            - **International Shipping:** User-selected mode (Air/Sea/Road)
             
-            **Transport Mode Impact:**
-            - **Road:** Standard rates (1.0x domestic cost, 0% port surcharge)
-            - **Rail:** 20% discount on domestic transport, 10% port discount
-            - **Air:** 50% premium on domestic transport, 30% port surcharge
+            **Domestic Transport Logic:**
+            - Base rate: ₹15 per km per ton
+            - Weight-based discounts for larger shipments
+            - Commodity-specific surcharges
             
-            **Cost Assumptions:**
-            - **Domestic Transport:** 
-              - Base rate: ₹15 per km per ton
-              - Mode factors applied to base rate
-            - **Port Charges:** 
-              - Mode-specific surcharges applied
-            - **Handling Fee:** ₹2,000 per supplier for consolidation
-            - **Warehouse Storage:** ₹500 per day (2-day consolidation time)
-            - **International Shipping:** Higher of $2,000/ton or $300/CBM
-            - **Insurance:** 2% of total cargo value
-            - **Coverage:** Costs calculated till destination country port only
+            **International Shipping Logic:**
+            - **Air:** Charged per kg or per CBM (whichever is higher)
+            - **Sea:** Charged per kg or per CBM (whichever is higher)
+            - **Road:** Charged per km per ton (only for neighboring countries)
             
-            **Port Selection Criteria:**
-            - Distance from item locations to port
-            - Transport mode surcharges
-            - Port specialization for destination region
-            - Total cost optimization including consolidation
+            **Consolidation Benefits:**
+            - Volume optimization through better packing
+            - Discounts on international shipping
+            - Reduced per-unit handling costs
+            
+            **Port Selection:**
+            - Based on specialization for destination region
+            - Minimizing total domestic transport costs
             """)
         else:
             st.info("Add suppliers to view consolidation report.")
