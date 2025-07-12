@@ -727,11 +727,11 @@ def main():
                             st.write(f"- Per kg: ₹{rates['per_kg']}")
                             st.write(f"- Per CBM: ₹{rates['per_cbm']}") 
                     
-                    # NEW: Detailed Item Cost Breakdown
+                    # FIXED: Per-Item Cost Breakdown with unique keys
                     st.subheader("📦 Per-Item Cost Breakdown")
-                    for supplier in st.session_state.suppliers:
+                    for s_idx, supplier in enumerate(st.session_state.suppliers):
                         with st.expander(f"📦 {supplier.name} - Item Costs"):
-                            for item in supplier.packing_list:
+                            for i_idx, item in enumerate(supplier.packing_list):
                                 st.markdown(f"**{item.description}** (Qty: {item.quantity})")
                                 
                                 # Create table for cost stages
@@ -749,18 +749,21 @@ def main():
                                 total_item_cost = item.get_total_cost()
                                 st.markdown(f"**Total Item Cost: ₹{total_item_cost:,.0f}**")
                                 
-                                # Pie chart for cost distribution
+                                # Pie chart for cost distribution with unique key
                                 if total_item_cost > 0:
-                                    cost_dist = {
-                                        stage["Stage"]: float(stage["Cost (₹)"].replace(",", ""))
-                                        for stage in stage_data
-                                    }
+                                    cost_dist = {}
+                                    for stage in stage_data:
+                                        cost_value = float(stage["Cost (₹)"].replace(",", ""))
+                                        stage_key = f"{stage['Stage']}_{s_idx}_{i_idx}"
+                                        cost_dist[stage_key] = cost_value
+                                    
                                     fig = px.pie(
                                         names=list(cost_dist.keys()),
                                         values=list(cost_dist.values()),
                                         title=f"Cost Distribution for {item.description}"
                                     )
-                                    st.plotly_chart(fig, use_container_width=True)
+                                    st.plotly_chart(fig, use_container_width=True, 
+                                                    key=f"pie_{s_idx}_{i_idx}")
         else:
             st.info("Please add at least one supplier to calculate costs.")   
     with tab3:
